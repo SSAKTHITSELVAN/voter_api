@@ -1,102 +1,85 @@
-import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
-from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+import fastapi
+from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
-from app.core.config import get_settings
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, get_logger
 from app.db.init_db import init_db
 from app.routers import (
     auth_router,
+    users_router,
     buildings_router,
     households_router,
-    users_router,
     verification_router,
 )
 
 configure_logging()
-logger = logging.getLogger(__name__)
-settings = get_settings()
+logger = get_logger(__name__)
 
-
-# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up – initialising database …")
     await init_db()
-    logger.info("Database ready.")
+    logger.info("Startup complete.")
     yield
     logger.info("Shutting down.")
 
 
-# ── App factory ───────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="Voter Data Collection API",
+    version="1.0.0",
+    description="Field data collection and verification API for voter surveys.",
+    lifespan=lifespan,
+    # Hide the default Swagger auth UI — we replace it below
+    swagger_ui_oauth2_redirect_url=None,
+)
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        title="Voter Data Collection API",
-        description=(
-            "Production-grade backend for political voter data collection.\n\n"
-            "**Roles**: SUPER_ADMIN → ADMIN → FIELD_USER\n\n"
-            "**Auth**: JWT via phone + password (no OTP)\n\n"
-            "**Geo**: PostGIS for spatial queries & duplicate detection"
-        ),
-        version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
-        lifespan=lifespan,
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(auth_router)
+app.include_router(users_router)
+app.include_router(buildings_router)
+app.include_router(households_router)
+app.include_router(verification_router)
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+@app.get("/health", tags=["Health"])
+async def health():
+    return {"status": "ok"}
+
+
+# ── Custom OpenAPI: replace OAuth2 form with a plain Bearer token input ───────
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
     )
 
-    # ── CORS ──────────────────────────────────────────────────────────────────
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"] if settings.DEBUG else [],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Replace every security scheme with a single HTTPBearer entry
+    schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Paste the JWT token returned by **POST /auth/login**",
+        }
+    }
 
-    # ── Custom error handlers ─────────────────────────────────────────────────
+    # Point every operation to use BearerAuth
+    for path in schema.get("paths", {}).values():
+        for operation in path.values():
+            if "security" in operation:
+                operation["security"] = [{"BearerAuth": []}]
 
-    @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        logger.warning("Validation error on %s: %s", request.url, exc.errors())
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={
-                "detail": exc.errors(),
-                "body": exc.body,
-            },
-        )
-
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        logger.exception("Unhandled exception on %s", request.url)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error."},
-        )
-
-    # ── Routers ───────────────────────────────────────────────────────────────
-    app.include_router(auth_router)
-    app.include_router(users_router)
-    app.include_router(buildings_router)
-    app.include_router(households_router)
-    app.include_router(verification_router)
-
-    # ── Health ────────────────────────────────────────────────────────────────
-    @app.get("/health", tags=["Health"], summary="Liveness probe")
-    async def health() -> dict:
-        return {"status": "ok", "env": settings.APP_ENV}
-
-    return app
+    app.openapi_schema = schema
+    return app.openapi_schema
 
 
-app = create_app()
+app.openapi = custom_openapi
