@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 import fastapi
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from app.core.logging import configure_logging, get_logger
@@ -34,6 +35,15 @@ app = FastAPI(
     lifespan=lifespan,
     # Hide the default Swagger auth UI — we replace it below
     swagger_ui_oauth2_redirect_url=None,
+)
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────
