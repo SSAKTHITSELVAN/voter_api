@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.expression import bindparam
 
 from app.core.config import get_settings
 from app.models.household import Household, HouseholdImage, Person
@@ -40,18 +41,20 @@ def _haversine_sql(lat: float, lon: float):
     Returns a SQLAlchemy column expression that computes the Haversine distance
     (in metres) between (lat, lon) and the household's stored lat/lng columns.
     Works on plain PostgreSQL with no extensions.
+
+    Uses literal_column() so that the result supports SQLAlchemy operators
+    like <=, which TextClause does not.
     """
-    return text(
-        """
-        :earth_r * 2 * ASIN(
-            SQRT(
-                POWER(SIN((RADIANS(households.latitude) - RADIANS(:lat)) / 2), 2)
-                + COS(RADIANS(:lat)) * COS(RADIANS(households.latitude))
-                * POWER(SIN((RADIANS(households.longitude) - RADIANS(:lon)) / 2), 2)
-            )
-        )
-        """
-    ).bindparams(earth_r=_EARTH_RADIUS_M, lat=lat, lon=lon)
+    expr = (
+        f"{_EARTH_RADIUS_M} * 2 * ASIN("
+        f"    SQRT("
+        f"        POWER(SIN((RADIANS(households.latitude) - RADIANS({lat})) / 2), 2)"
+        f"        + COS(RADIANS({lat})) * COS(RADIANS(households.latitude))"
+        f"        * POWER(SIN((RADIANS(households.longitude) - RADIANS({lon})) / 2), 2)"
+        f"    )"
+        f")"
+    )
+    return literal_column(expr)
 
 
 def _bbox_filter(lat: float, lon: float, radius_m: float):
@@ -101,7 +104,7 @@ class HouseholdService:
             .where(
                 Household.deleted_at.is_(None),
                 *bbox,
-                distance_expr <= radius,
+                distance_expr <= radius,  # now works: literal_column supports <=
             )
         )
         if exclude_id:
