@@ -1,13 +1,13 @@
 import logging
 import math
+import uuid
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import HTTPException, status
-from sqlalchemy import func, select, literal_column
+from fastapi import HTTPException, UploadFile, status
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy.sql.expression import bindparam
 
 from app.core.config import get_settings
 from app.models.household import Household, HouseholdImage, Person
@@ -18,6 +18,7 @@ from app.schemas.household import (
     HouseholdBrief,
     HouseholdCreate,
 )
+from app.services.file_storage import FileStorageService
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -74,6 +75,7 @@ def _bbox_filter(lat: float, lon: float, radius_m: float):
 class HouseholdService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+        self.storage = FileStorageService()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -140,6 +142,39 @@ class HouseholdService:
         )
 
         rows = (await self.db.execute(q)).all()
+        if not rows:
+            return []
+
+        household_ids = [household.id for household, _ in rows]
+        image_rows = (
+            await self.db.execute(
+                select(
+                    HouseholdImage.household_id,
+                    HouseholdImage.image_url,
+                    HouseholdImage.created_at,
+                )
+                .where(HouseholdImage.household_id.in_(household_ids))
+                .order_by(HouseholdImage.household_id, HouseholdImage.created_at)
+            )
+        ).all()
+
+        image_meta: dict[UUID, dict[str, str | int | None]] = {
+            household_id: {
+                "count": 0,
+                "first_url": None,
+            }
+            for household_id in household_ids
+        }
+
+        for household_id, image_url, _created_at in image_rows:
+            meta = image_meta.setdefault(
+                household_id,
+                {"count": 0, "first_url": None},
+            )
+            meta["count"] = int(meta["count"] or 0) + 1
+            if meta["first_url"] is None:
+                meta["first_url"] = image_url
+
         return [
             HouseholdBrief(
                 id=household.id,
@@ -149,6 +184,8 @@ class HouseholdService:
                 house_type=household.house_type,
                 created_at=household.created_at,
                 distance_metres=round(dist, 2),
+                landmark_image_count=int(image_meta.get(household.id, {}).get("count", 0) or 0),
+                landmark_image_url=image_meta.get(household.id, {}).get("first_url"),
             )
             for household, dist in rows
         ]
@@ -156,61 +193,83 @@ class HouseholdService:
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
     async def create_household(
-        self, payload: HouseholdCreate, creator: User
+        self,
+        payload: HouseholdCreate,
+        creator: User,
+        landmark_image_files: list[UploadFile] | None = None,
     ) -> Household:
-        # 1. Duplicate check
-        dupes = await self.find_nearby_duplicates(payload.latitude, payload.longitude)
-        if dupes:
-            ids = [str(d.id) for d in dupes]
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "message": "Possible duplicate household(s) found within 20 metres.",
-                    "duplicate_ids": ids,
-                },
-            )
+        uploaded_files = list(landmark_image_files or [])
+        uploaded_file_urls: list[str] = []
+        upload_handled = False
 
-        # 2. Create household
-        household = Household(
-            latitude=payload.latitude,
-            longitude=payload.longitude,
-            address_text=payload.address_text,
-            landmark_description=payload.landmark_description,
-            house_type=payload.house_type,
-            unit_id=payload.unit_id,
-            created_by=creator.id,
-        )
-        self.db.add(household)
-        await self.db.flush()  # get household.id
+        try:
+            dupes = await self.find_nearby_duplicates(payload.latitude, payload.longitude)
+            if dupes:
+                ids = [str(d.id) for d in dupes]
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "message": "Possible duplicate household(s) found within 20 metres.",
+                        "duplicate_ids": ids,
+                    },
+                )
 
-        # 3. Persons
-        for p in payload.persons:
-            person = Person(
-                household_id=household.id,
-                age=p.age,
-                gender=p.gender,
-                is_voter=p.is_voter,
-            )
-            self.db.add(person)
+            total_images = len(payload.landmark_image_urls) + len(uploaded_files)
+            if total_images > settings.HOUSEHOLD_IMAGE_LIMIT:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Maximum {settings.HOUSEHOLD_IMAGE_LIMIT} landmark images "
+                        "allowed per household."
+                    ),
+                )
 
-        # 4. Images (max 5)
-        if len(payload.image_urls) > 5:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Maximum 5 images allowed per household.",
+            household = Household(
+                id=uuid.uuid4(),
+                latitude=payload.latitude,
+                longitude=payload.longitude,
+                address_text=payload.address_text,
+                landmark_description=None,
+                house_type=payload.house_type,
+                unit_id=payload.unit_id,
+                created_by=creator.id,
             )
-        for url in payload.image_urls:
-            img = HouseholdImage(
-                household_id=household.id,
-                image_url=url,
-                uploaded_by=creator.id,
-            )
-            self.db.add(img)
+            self.db.add(household)
 
-        await self.db.flush()
-        await self.db.refresh(household)
-        logger.info("Household created: id=%s by=%s", household.id, creator.id)
-        return household
+            if uploaded_files:
+                upload_handled = True
+                uploaded_file_urls = await self.storage.save_household_images(
+                    household.id,
+                    uploaded_files,
+                )
+
+            for p in payload.persons:
+                household.persons.append(
+                    Person(
+                        age=p.age,
+                        gender=p.gender,
+                        is_voter=p.is_voter,
+                    )
+                )
+
+            for url in [*payload.landmark_image_urls, *uploaded_file_urls]:
+                household.images.append(
+                    HouseholdImage(
+                        image_url=url,
+                        uploaded_by=creator.id,
+                    )
+                )
+
+            await self.db.flush()
+            await self.db.refresh(household)
+            logger.info("Household created: id=%s by=%s", household.id, creator.id)
+            return household
+        except Exception:
+            if uploaded_file_urls:
+                self.storage.delete_urls(uploaded_file_urls)
+            if uploaded_files and not upload_handled:
+                await self.storage.close_files(uploaded_files)
+            raise
 
     async def get_household_by_id(self, household_id: UUID) -> Household:
         result = await self.db.execute(
@@ -240,10 +299,13 @@ class HouseholdService:
         await self.get_household_by_id(household_id)
 
         count = await self._count_images(household_id)
-        if count >= 5:
+        if count >= settings.HOUSEHOLD_IMAGE_LIMIT:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Maximum 5 images already reached for this household.",
+                detail=(
+                    f"Maximum {settings.HOUSEHOLD_IMAGE_LIMIT} landmark images "
+                    "already reached for this household."
+                ),
             )
 
         img = HouseholdImage(
@@ -259,22 +321,23 @@ class HouseholdService:
     # ── Bulk Upload (Offline Sync) ────────────────────────────────────────────
 
     async def bulk_create_households(
-        self, payload: BulkHouseholdCreate, creator: User
+        self,
+        payload: BulkHouseholdCreate,
+        creator: User,
+        landmark_image_files_by_index: dict[int, list[UploadFile]] | None = None,
     ) -> BulkUploadResult:
         created = 0
         skipped = 0
         errors: list[dict] = []
+        files_by_index = landmark_image_files_by_index or {}
 
         for idx, h_data in enumerate(payload.households):
             try:
-                dupes = await self.find_nearby_duplicates(
-                    h_data.latitude, h_data.longitude
+                await self.create_household(
+                    h_data,
+                    creator,
+                    landmark_image_files=files_by_index.get(idx, []),
                 )
-                if dupes:
-                    skipped += 1
-                    continue
-
-                await self.create_household(h_data, creator)
                 created += 1
 
             except HTTPException as exc:

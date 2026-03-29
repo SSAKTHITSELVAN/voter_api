@@ -18,8 +18,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # PostGIS extension (idempotent)
-    op.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+    # PostGIS extension (try to create, but don't fail if permissions are insufficient)
+    try:
+        op.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+    except Exception:
+        # PostGIS extension should be created manually by superuser if this fails
+        pass
 
     # ── ENUM types ────────────────────────────────────────────────────────────
     userrole = postgresql.ENUM(

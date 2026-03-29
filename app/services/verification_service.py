@@ -1,11 +1,14 @@
+import csv
+import json
 import logging
+from io import StringIO
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.record import CollectionRecord, VerificationRecord
 from app.models.household import Household, Person
+from app.models.record import CollectionRecord, VerificationRecord
 from app.models.user import User
 from app.schemas.household import VerificationCreate
 
@@ -19,7 +22,6 @@ class VerificationService:
     async def create_verification(
         self, payload: VerificationCreate, verifier: User
     ) -> VerificationRecord:
-        # Ensure household exists
         result = await self.db.execute(
             select(Household).where(
                 Household.id == payload.household_id,
@@ -29,6 +31,7 @@ class VerificationService:
         household = result.scalars().first()
         if household is None:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="Household not found.")
 
         record = VerificationRecord(
@@ -42,7 +45,10 @@ class VerificationService:
         await self.db.refresh(record)
         logger.info(
             "Verification created: id=%s household=%s status=%s by=%s",
-            record.id, payload.household_id, payload.status, verifier.id,
+            record.id,
+            payload.household_id,
+            payload.status,
+            verifier.id,
         )
         return record
 
@@ -52,17 +58,13 @@ class VerificationService:
         collector: User,
         raw_data: dict | None = None,
     ) -> CollectionRecord:
-        """
-        Auto-compute total_people and total_voters from Person rows.
-        Stores a raw_data snapshot (useful for offline sync payloads).
-        """
         persons_result = await self.db.execute(
             select(Person).where(Person.household_id == household_id)
         )
         persons = persons_result.scalars().all()
 
         total_people = len(persons)
-        total_voters = sum(1 for p in persons if p.is_voter)
+        total_voters = sum(1 for person in persons if person.is_voter)
 
         rec = CollectionRecord(
             household_id=household_id,
@@ -76,9 +78,35 @@ class VerificationService:
         await self.db.refresh(rec)
         logger.info(
             "CollectionRecord created: id=%s household=%s people=%d voters=%d",
-            rec.id, household_id, total_people, total_voters,
+            rec.id,
+            household_id,
+            total_people,
+            total_voters,
         )
         return rec
+
+    def _serialize_collection_record(
+        self,
+        record: CollectionRecord,
+        collector: User | None,
+        household: Household | None,
+    ) -> dict:
+        return {
+            "id": record.id,
+            "household_id": record.household_id,
+            "collected_by": record.collected_by,
+            "collected_by_name": collector.name if collector else None,
+            "collected_by_phone": collector.phone if collector else None,
+            "collected_by_role": collector.role if collector else None,
+            "household_address_text": household.address_text if household else None,
+            "household_house_type": household.house_type if household else None,
+            "household_latitude": household.latitude if household else None,
+            "household_longitude": household.longitude if household else None,
+            "total_people": record.total_people,
+            "total_voters": record.total_voters,
+            "raw_data_json": record.raw_data_json,
+            "created_at": record.created_at,
+        }
 
     async def list_verifications_for_household(
         self, household_id: UUID
@@ -92,10 +120,103 @@ class VerificationService:
 
     async def list_collection_records_for_household(
         self, household_id: UUID
-    ) -> list[CollectionRecord]:
+    ) -> list[dict]:
         result = await self.db.execute(
-            select(CollectionRecord)
+            select(CollectionRecord, User, Household)
+            .outerjoin(User, CollectionRecord.collected_by == User.id)
+            .outerjoin(Household, CollectionRecord.household_id == Household.id)
             .where(CollectionRecord.household_id == household_id)
             .order_by(CollectionRecord.created_at.desc())
         )
-        return list(result.scalars().all())
+        return [
+            self._serialize_collection_record(record, collector, household)
+            for record, collector, household in result.all()
+        ]
+
+    async def list_collection_records(
+        self,
+        *,
+        limit: int = 200,
+        offset: int = 0,
+        search: str | None = None,
+        collector_id: UUID | None = None,
+        household_id: UUID | None = None,
+    ) -> list[dict]:
+        query = (
+            select(CollectionRecord, User, Household)
+            .outerjoin(User, CollectionRecord.collected_by == User.id)
+            .outerjoin(Household, CollectionRecord.household_id == Household.id)
+            .order_by(CollectionRecord.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+
+        if collector_id is not None:
+            query = query.where(CollectionRecord.collected_by == collector_id)
+        if household_id is not None:
+            query = query.where(CollectionRecord.household_id == household_id)
+        if search:
+            term = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    User.name.ilike(term),
+                    User.phone.ilike(term),
+                    Household.address_text.ilike(term),
+                )
+            )
+
+        result = await self.db.execute(query)
+        return [
+            self._serialize_collection_record(record, collector, household)
+            for record, collector, household in result.all()
+        ]
+
+    def export_collection_records_csv(self, records: list[dict]) -> str:
+        output = StringIO()
+        writer = csv.DictWriter(
+            output,
+            fieldnames=[
+                "record_id",
+                "household_id",
+                "collector_id",
+                "collector_name",
+                "collector_phone",
+                "collector_role",
+                "household_address_text",
+                "household_house_type",
+                "household_latitude",
+                "household_longitude",
+                "total_people",
+                "total_voters",
+                "created_at",
+                "raw_data_json",
+            ],
+        )
+        writer.writeheader()
+
+        for record in records:
+            writer.writerow(
+                {
+                    "record_id": record["id"],
+                    "household_id": record["household_id"],
+                    "collector_id": record["collected_by"],
+                    "collector_name": record.get("collected_by_name") or "",
+                    "collector_phone": record.get("collected_by_phone") or "",
+                    "collector_role": record.get("collected_by_role") or "",
+                    "household_address_text": record.get("household_address_text") or "",
+                    "household_house_type": record.get("household_house_type") or "",
+                    "household_latitude": record.get("household_latitude") or "",
+                    "household_longitude": record.get("household_longitude") or "",
+                    "total_people": record["total_people"],
+                    "total_voters": record["total_voters"],
+                    "created_at": record["created_at"].isoformat()
+                    if record.get("created_at")
+                    else "",
+                    "raw_data_json": json.dumps(
+                        record.get("raw_data_json") or {},
+                        separators=(",", ":"),
+                    ),
+                }
+            )
+
+        return output.getvalue()

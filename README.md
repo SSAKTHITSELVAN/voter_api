@@ -167,7 +167,7 @@ Login returns a token valid for `ACCESS_TOKEN_EXPIRE_MINUTES` (default: 60 min).
 | POST   | `/households/bulk`                       | Bulk create (offline sync)         |
 | GET    | `/households/nearby`                     | PostGIS radius search              |
 | GET    | `/households/duplicate-check`            | Check for nearby duplicates        |
-| GET    | `/households/{id}`                       | Full household + persons + images  |
+| GET    | `/households/{id}`                       | Full household + persons + landmark images |
 | DELETE | `/households/{id}`                       | Soft-delete household              |
 | GET    | `/households/{id}/collection-records`    | Collection audit trail             |
 | GET    | `/households/{id}/verifications`         | Verification audit trail           |
@@ -190,6 +190,13 @@ All `User` and `Household` records carry a `deleted_at` timestamp. No `DELETE` S
 ### Offline Sync
 `POST /households/bulk` accepts up to 500 households in one request. Each item passes through the same duplicate check; duplicates are skipped and reported in the response summary, not errored.
 
+### Landmark Images
+- `landmark_description` is no longer part of household creation.
+- `POST /households` supports `multipart/form-data` with a `payload` JSON string and up to 5 repeated `landmark_images` files.
+- `POST /households/bulk` supports `multipart/form-data` with a `payload` JSON string and indexed file fields such as `landmark_images_0`, `landmark_images_1`, and so on.
+- JSON clients can still send `landmark_image_urls` when files are already hosted elsewhere.
+- Uploaded files are served back from the API under the `/uploads/...` path.
+
 ### PostGIS Spatial Index
 A `GIST` index on `households.geog` makes `ST_DWithin` and `ST_Distance` queries fast even at scale.
 
@@ -210,5 +217,8 @@ A `GIST` index on `households.geog` makes `ST_DWithin` and `ST_Distance` queries
 | `SUPER_ADMIN_PASSWORD`      | `SuperSecret@123`    | Seeded super admin password        |
 | `SUPER_ADMIN_NAME`          | `Super Admin`        | Seeded super admin name            |
 | `DUPLICATE_RADIUS_METRES`   | `20`                 | Duplicate detection radius         |
+| `UPLOAD_DIR`                | `uploads`            | Local directory for uploaded files |
+| `UPLOAD_URL_PREFIX`         | `/uploads`           | Public URL prefix for uploaded files |
+| `HOUSEHOLD_IMAGE_LIMIT`     | `5`                  | Max landmark images per household  |
 
 > ⚠️ In production: set `DEBUG=false`, use a strong `SECRET_KEY`, and restrict CORS `allow_origins`.

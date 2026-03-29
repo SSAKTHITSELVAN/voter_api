@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Duplicate detection radius (metres)
     DUPLICATE_RADIUS_METRES: int = 20
 
+    # Uploads
+    UPLOAD_DIR: str = "uploads"
+    UPLOAD_URL_PREFIX: str = "/uploads"
+    HOUSEHOLD_IMAGE_LIMIT: int = 5
+
 
 @lru_cache()
 def get_settings() -> Settings:

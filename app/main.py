@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import fastapi
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.staticfiles import StaticFiles
 
+from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.init_db import init_db
 from app.routers import (
@@ -17,6 +20,9 @@ from app.routers import (
 
 configure_logging()
 logger = get_logger(__name__)
+settings = get_settings()
+upload_dir = Path(settings.UPLOAD_DIR).resolve()
+upload_dir.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -52,6 +58,11 @@ app.include_router(users_router)
 app.include_router(buildings_router)
 app.include_router(households_router)
 app.include_router(verification_router)
+app.mount(
+    settings.UPLOAD_URL_PREFIX,
+    StaticFiles(directory=upload_dir),
+    name="uploads",
+)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

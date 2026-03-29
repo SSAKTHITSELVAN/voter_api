@@ -8,6 +8,13 @@
 # =============================================================================
 
 BASE_URL="${BASE_URL:-http://localhost:8000}"
+TMP_IMAGE_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_IMAGE_DIR"' EXIT
+
+# Small placeholder files so the multipart upload examples are runnable.
+printf 'landmark-image-1' > "$TMP_IMAGE_DIR/landmark1.jpg"
+printf 'landmark-image-2' > "$TMP_IMAGE_DIR/landmark2.jpg"
+printf 'landmark-image-3' > "$TMP_IMAGE_DIR/landmark3.jpg"
 
 echo "============================================================"
 echo " 0. Health Check"
@@ -176,23 +183,19 @@ echo " 11. Create INDIVIDUAL household"
 echo "============================================================"
 HOUSEHOLD_RESP=$(curl -s -X POST "$BASE_URL/households" \
   -H "Authorization: Bearer $FIELD_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+  -F 'payload={
     "latitude": 13.0827,
     "longitude": 80.2707,
     "address_text": "42 Anna Nagar, Chennai",
-    "landmark_description": "Near the blue water tank",
     "house_type": "INDIVIDUAL",
     "persons": [
       {"age": 45, "gender": "MALE",   "is_voter": true},
       {"age": 42, "gender": "FEMALE", "is_voter": true},
       {"age": 16, "gender": "MALE",   "is_voter": false}
-    ],
-    "image_urls": [
-      "https://storage.example.com/house_front.jpg",
-      "https://storage.example.com/house_side.jpg"
     ]
-  }')
+  }' \
+  -F "landmark_images=@$TMP_IMAGE_DIR/landmark1.jpg;type=image/jpeg" \
+  -F "landmark_images=@$TMP_IMAGE_DIR/landmark2.jpg;type=image/jpeg")
 echo "$HOUSEHOLD_RESP" | jq .
 HOUSEHOLD_ID=$(echo "$HOUSEHOLD_RESP" | jq -r '.id')
 
@@ -206,20 +209,19 @@ echo " 12. Create APARTMENT household (linked to Unit)"
 echo "============================================================"
 APT_HOUSEHOLD=$(curl -s -X POST "$BASE_URL/households" \
   -H "Authorization: Bearer $FIELD_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{
+  -F "payload={
     \"latitude\": 13.0900,
     \"longitude\": 80.2800,
     \"address_text\": \"Sunrise Apartments, 12 Main Road, Chennai\",
-    \"landmark_description\": \"Near City Mall entrance\",
     \"house_type\": \"APARTMENT\",
     \"unit_id\": \"$UNIT_ID\",
     \"persons\": [
       {\"age\": 38, \"gender\": \"MALE\",   \"is_voter\": true},
       {\"age\": 35, \"gender\": \"FEMALE\", \"is_voter\": true}
     ],
-    \"image_urls\": []
-  }")
+    \"landmark_image_urls\": []
+  }" \
+  -F "landmark_images=@$TMP_IMAGE_DIR/landmark3.jpg;type=image/jpeg")
 echo "$APT_HOUSEHOLD" | jq .
 APT_HOUSEHOLD_ID=$(echo "$APT_HOUSEHOLD" | jq -r '.id')
 
@@ -311,8 +313,7 @@ echo " 19. Bulk upload (offline sync) — 2 households"
 echo "============================================================"
 curl -s -X POST "$BASE_URL/households/bulk" \
   -H "Authorization: Bearer $FIELD_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
+  -F 'payload={
     "households": [
       {
         "latitude": 13.1000,
@@ -321,8 +322,7 @@ curl -s -X POST "$BASE_URL/households/bulk" \
         "house_type": "INDIVIDUAL",
         "persons": [
           {"age": 55, "gender": "FEMALE", "is_voter": true}
-        ],
-        "image_urls": []
+        ]
       },
       {
         "latitude": 13.1050,
@@ -333,11 +333,13 @@ curl -s -X POST "$BASE_URL/households/bulk" \
           {"age": 30, "gender": "MALE", "is_voter": true},
           {"age": 28, "gender": "FEMALE", "is_voter": true},
           {"age": 5,  "gender": "MALE", "is_voter": false}
-        ],
-        "image_urls": []
+        ]
       }
     ]
-  }' | jq .
+  }' \
+  -F "landmark_images_0=@$TMP_IMAGE_DIR/landmark1.jpg;type=image/jpeg" \
+  -F "landmark_images_0=@$TMP_IMAGE_DIR/landmark2.jpg;type=image/jpeg" \
+  -F "landmark_images_1=@$TMP_IMAGE_DIR/landmark3.jpg;type=image/jpeg" | jq .
 
 
 # =============================================================================

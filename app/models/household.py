@@ -71,6 +71,10 @@ class Household(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     def __repr__(self) -> str:
         return f"<Household id={self.id} lat={self.latitude} lon={self.longitude}>"
 
+    @property
+    def landmark_images(self) -> list["HouseholdImage"]:
+        return self.images
+
 
 class HouseholdImage(UUIDMixin, TimestampMixin, Base):
     """Max 5 images per household – enforced at service layer."""

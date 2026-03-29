@@ -1,0 +1,68 @@
+﻿{
+  "expo": {
+    "name": "Voter App",
+    "slug": "voter_app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "voterapp",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.admk.voterapp",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app uses your location to record household GPS coordinates and find nearby households.",
+        "NSLocationAlwaysUsageDescription": "This app uses your location for household data collection.",
+        "NSCameraUsageDescription": "This app uses the camera to capture landmark images for households.",
+        "NSPhotoLibraryUsageDescription": "This app uses your photo library to attach landmark images to households."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/images/android-icon-foreground.png",
+        "backgroundColor": "#CC0000"
+      },
+      "package": "com.admk.voterapp",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "READ_MEDIA_IMAGES"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#CC0000"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Voter App to use your location for recording household coordinates."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Voter App to use your photos for household landmark images.",
+          "cameraPermission": "Allow Voter App to use your camera for household landmark images."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
