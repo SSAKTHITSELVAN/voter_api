@@ -246,6 +246,7 @@ class HouseholdService:
             for p in payload.persons:
                 household.persons.append(
                     Person(
+                        name=p.name,
                         age=p.age,
                         gender=p.gender,
                         is_voter=p.is_voter,
@@ -355,3 +356,6 @@ class HouseholdService:
             duplicates_skipped=skipped,
             errors=errors,
         )
+
+
+

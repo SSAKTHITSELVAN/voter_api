@@ -108,6 +108,7 @@ class Person(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
         nullable=False,
         index=True,
     )
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gender: Mapped[GenderType | None] = mapped_column(
         Enum(GenderType, name="gendertype"), nullable=True
@@ -118,3 +119,4 @@ class Person(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
 
     def __repr__(self) -> str:
         return f"<Person id={self.id} household_id={self.household_id} voter={self.is_voter}>"
+

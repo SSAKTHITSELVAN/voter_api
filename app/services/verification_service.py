@@ -2,6 +2,7 @@ import csv
 import json
 import logging
 from io import StringIO
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import or_, select
@@ -108,6 +109,29 @@ class VerificationService:
             "created_at": record.created_at,
         }
 
+    def _extract_person_rows(self, record: dict) -> list[dict[str, Any]]:
+        raw_data = record.get("raw_data_json")
+        if not isinstance(raw_data, dict):
+            return []
+        persons = raw_data.get("persons")
+        if not isinstance(persons, list):
+            return []
+        return [person for person in persons if isinstance(person, dict)]
+
+    def _build_person_summary(self, record: dict) -> str:
+        summary_parts: list[str] = []
+        for person in self._extract_person_rows(record):
+            raw_name = person.get("name")
+            name = str(raw_name).strip() if raw_name not in (None, "") else ""
+            age = person.get("age")
+            if name and age not in (None, ""):
+                summary_parts.append(f"{name} (Age {age})")
+            elif name:
+                summary_parts.append(name)
+            elif age not in (None, ""):
+                summary_parts.append(f"Age {age}")
+        return "; ".join(summary_parts)
+
     async def list_verifications_for_household(
         self, household_id: UUID
     ) -> list[VerificationRecord]:
@@ -141,20 +165,21 @@ class VerificationService:
         search: str | None = None,
         collector_id: UUID | None = None,
         household_id: UUID | None = None,
+        record_id: UUID | None = None,
     ) -> list[dict]:
         query = (
             select(CollectionRecord, User, Household)
             .outerjoin(User, CollectionRecord.collected_by == User.id)
             .outerjoin(Household, CollectionRecord.household_id == Household.id)
             .order_by(CollectionRecord.created_at.desc())
-            .limit(limit)
-            .offset(offset)
         )
 
         if collector_id is not None:
             query = query.where(CollectionRecord.collected_by == collector_id)
         if household_id is not None:
             query = query.where(CollectionRecord.household_id == household_id)
+        if record_id is not None:
+            query = query.where(CollectionRecord.id == record_id)
         if search:
             term = f"%{search.strip()}%"
             query = query.where(
@@ -165,6 +190,7 @@ class VerificationService:
                 )
             )
 
+        query = query.limit(limit).offset(offset)
         result = await self.db.execute(query)
         return [
             self._serialize_collection_record(record, collector, household)
@@ -188,6 +214,8 @@ class VerificationService:
                 "household_longitude",
                 "total_people",
                 "total_voters",
+                "persons_summary",
+                "persons_json",
                 "created_at",
                 "raw_data_json",
             ],
@@ -195,6 +223,7 @@ class VerificationService:
         writer.writeheader()
 
         for record in records:
+            persons = self._extract_person_rows(record)
             writer.writerow(
                 {
                     "record_id": record["id"],
@@ -209,6 +238,8 @@ class VerificationService:
                     "household_longitude": record.get("household_longitude") or "",
                     "total_people": record["total_people"],
                     "total_voters": record["total_voters"],
+                    "persons_summary": self._build_person_summary(record),
+                    "persons_json": json.dumps(persons, separators=(",", ":")),
                     "created_at": record["created_at"].isoformat()
                     if record.get("created_at")
                     else "",

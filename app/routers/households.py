@@ -433,6 +433,7 @@ async def list_all_collection_records(
     search: str | None = Query(None, max_length=120),
     collector_id: UUID | None = Query(None),
     household_id: UUID | None = Query(None),
+    record_id: UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(*_admin_roles)),
 ) -> list[CollectionRecordRead]:
@@ -442,6 +443,7 @@ async def list_all_collection_records(
         search=search,
         collector_id=collector_id,
         household_id=household_id,
+        record_id=record_id,
     )
     return [CollectionRecordRead.model_validate(record) for record in records]
 
@@ -454,6 +456,7 @@ async def export_collection_records(
     search: str | None = Query(None, max_length=120),
     collector_id: UUID | None = Query(None),
     household_id: UUID | None = Query(None),
+    record_id: UUID | None = Query(None),
     limit: int = Query(5000, ge=1, le=10000),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(*_admin_roles)),
@@ -465,6 +468,7 @@ async def export_collection_records(
         search=search,
         collector_id=collector_id,
         household_id=household_id,
+        record_id=record_id,
     )
     csv_content = service.export_collection_records_csv(records)
     return Response(
@@ -538,4 +542,8 @@ async def list_verifications(
 ) -> list[VerificationRead]:
     records = await VerificationService(db).list_verifications_for_household(household_id)
     return [VerificationRead.model_validate(r) for r in records]
+
+
+
+
 

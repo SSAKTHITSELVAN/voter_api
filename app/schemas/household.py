@@ -10,6 +10,7 @@ from app.schemas.common import OrmBase
 
 
 class PersonCreate(BaseModel):
+    name: str | None = Field(None, max_length=120)
     age: int | None = Field(None, ge=0, le=120)
     gender: GenderType | None = None
     is_voter: bool = False
@@ -18,6 +19,7 @@ class PersonCreate(BaseModel):
 class PersonRead(OrmBase):
     id: UUID
     household_id: UUID
+    name: str | None
     age: int | None
     gender: GenderType | None
     is_voter: bool
@@ -134,3 +136,5 @@ class VerificationRead(OrmBase):
     status: VerificationStatus
     notes: str | None
     created_at: datetime
+
+
