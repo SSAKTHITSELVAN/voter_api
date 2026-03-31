@@ -33,3 +33,14 @@ class UnitRead(OrmBase):
     flat_number: str
     floor_number: int | None
     created_at: datetime
+
+
+class BuildingUpdate(BaseModel):
+    name: str | None = Field(None, min_length=2, max_length=200)
+    address_text: str | None = None
+    total_floors: int | None = Field(None, ge=1, le=200)
+
+
+class UnitUpdate(BaseModel):
+    flat_number: str | None = Field(None, min_length=1, max_length=30)
+    floor_number: int | None = Field(None, ge=0, le=200)

@@ -20,6 +20,7 @@ from app.schemas.household import (
     HouseholdBrief,
     HouseholdCreate,
     HouseholdRead,
+    HouseholdUpdate,
     VerificationCreate,
     VerificationRead,
     CollectionRecordRead,
@@ -374,29 +375,6 @@ async def bulk_create_households(
     )
 
 
-# ── Duplicate Check ───────────────────────────────────────────────────────────
-
-@router.get(
-    "/duplicate-check",
-    response_model=DuplicateCheckResult,
-    summary="Check for duplicate households near a GPS coordinate",
-)
-async def duplicate_check(
-    latitude: float = Query(..., ge=-90.0, le=90.0),
-    longitude: float = Query(..., ge=-180.0, le=180.0),
-    radius_metres: int = Query(20, ge=1, le=500),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(*_field_roles)),
-) -> DuplicateCheckResult:
-    dupes = await HouseholdService(db).find_nearby_duplicates(
-        latitude, longitude, radius_metres
-    )
-    return DuplicateCheckResult(
-        has_duplicates=bool(dupes),
-        duplicates=[HouseholdBrief.model_validate(h) for h in dupes],
-    )
-
-
 # ── Nearby Search ─────────────────────────────────────────────────────────────
 
 @router.get(
@@ -478,6 +456,27 @@ async def export_collection_records(
             "Content-Disposition": 'attachment; filename="collection-records.csv"',
         },
     )
+# ── Get List & Single ─────────────────────────────────────────────────────────
+
+@router.get(
+    "/all",
+    summary="Admin: List all households with pagination and search",
+)
+async def list_households(
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    search: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(*_admin_roles)),
+) -> dict:
+    svc = HouseholdService(db)
+    items, total = await svc.list_households(limit, offset, search)
+    return {
+        "items": [HouseholdRead.model_validate(h) for h in items],
+        "total": total,
+    }
+
+
 @router.get(
     "/{household_id}",
     response_model=HouseholdRead,
@@ -490,6 +489,29 @@ async def get_household(
 ) -> HouseholdRead:
     household = await HouseholdService(db).get_household_by_id(household_id)
     return HouseholdRead.model_validate(household)
+
+
+# ── Update Household ─────────────────────────────────────────────────────────
+
+@router.put(
+    "/{household_id}",
+    response_model=HouseholdRead,
+    summary="Update a household (address, house_type, unit_id, persons)",
+)
+async def update_household(
+    household_id: UUID,
+    payload: HouseholdUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(*_admin_roles)),
+) -> HouseholdRead:
+    """
+    Partial update of a household. Only `ADMIN` and `SUPER_ADMIN` may edit.
+    Providing `persons` replaces the entire persons list for this household.
+    """
+    svc = HouseholdService(db)
+    household = await svc.update_household(household_id, payload, current_user)
+    full = await svc.get_household_by_id(household.id)
+    return HouseholdRead.model_validate(full)
 
 
 # ── Soft Delete ───────────────────────────────────────────────────────────────
@@ -508,6 +530,23 @@ async def delete_household(
 ) -> MessageResponse:
     await HouseholdService(db).soft_delete_household(household_id, current_user)
     return MessageResponse(message="Household soft-deleted.")
+
+
+# ── Delete Single Person ──────────────────────────────────────────────────────
+
+@router.delete(
+    "/{household_id}/persons/{person_id}",
+    response_model=MessageResponse,
+    summary="Remove a person from a household",
+)
+async def delete_person(
+    household_id: UUID,
+    person_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(*_admin_roles)),
+) -> MessageResponse:
+    await HouseholdService(db).delete_person(household_id, person_id, current_user)
+    return MessageResponse(message="Person removed from household.")
 
 
 # ── Collection Records ────────────────────────────────────────────────────────

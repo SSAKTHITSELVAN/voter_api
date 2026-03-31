@@ -17,6 +17,7 @@ from app.schemas.household import (
     BulkUploadResult,
     HouseholdBrief,
     HouseholdCreate,
+    HouseholdUpdate,
 )
 from app.services.file_storage import FileStorageService
 
@@ -192,6 +193,30 @@ class HouseholdService:
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
+    async def list_households(self, limit: int = 50, offset: int = 0, search: str | None = None) -> tuple[list[Household], int]:
+        from sqlalchemy import or_
+        q = select(Household).where(Household.deleted_at.is_(None))
+        if search:
+            q = q.where(
+                or_(
+                    Household.address_text.ilike(f"%{search}%"),
+                    Household.id.cast(str).ilike(f"%{search}%"),
+                )
+            )
+
+        # Count total
+        count_q = select(func.count()).select_from(q.subquery())
+        total = (await self.db.execute(count_q)).scalar() or 0
+
+        # Get instances with persons/images preloaded
+        q = q.options(
+            selectinload(Household.persons),
+            selectinload(Household.images)
+        ).order_by(Household.created_at.desc()).offset(offset).limit(limit)
+
+        items = (await self.db.execute(q)).scalars().all()
+        return list(items), total
+
     async def create_household(
         self,
         payload: HouseholdCreate,
@@ -294,6 +319,51 @@ class HouseholdService:
         household.deleted_at = datetime.now(timezone.utc)
         await self.db.flush()
 
+    async def update_household(self, household_id: UUID, payload: HouseholdUpdate, requester: User) -> Household:
+        """Partially update address, house_type, unit_id, and/or the full persons list."""
+        household = await self.get_household_by_id(household_id)
+
+        if payload.address_text is not None:
+            household.address_text = payload.address_text
+        if payload.house_type is not None:
+            household.house_type = payload.house_type
+        if payload.unit_id is not None or payload.house_type == "INDIVIDUAL":
+            household.unit_id = payload.unit_id
+
+        # Replace all persons if a new list is provided
+        if payload.persons is not None:
+            # Remove existing persons
+            for person in list(household.persons):
+                await self.db.delete(person)
+            await self.db.flush()
+            # Re-load after deletion
+            household.persons.clear()
+            # Insert new persons
+            for p in payload.persons:
+                household.persons.append(
+                    Person(
+                        name=p.name,
+                        age=p.age,
+                        gender=p.gender,
+                        is_voter=p.is_voter,
+                    )
+                )
+
+        await self.db.flush()
+        await self.db.refresh(household)
+        logger.info("Household updated: id=%s by=%s", household.id, requester.id)
+        return household
+
+    async def delete_person(self, household_id: UUID, person_id: UUID, requester: User) -> None:
+        """Remove a single person from a household."""
+        household = await self.get_household_by_id(household_id)
+        person = next((p for p in household.persons if p.id == person_id), None)
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found in this household.")
+        await self.db.delete(person)
+        await self.db.flush()
+        logger.info("Person removed: id=%s from household=%s by=%s", person_id, household_id, requester.id)
+
     async def add_image(
         self, household_id: UUID, image_url: str, uploader: User
     ) -> HouseholdImage:
@@ -331,8 +401,16 @@ class HouseholdService:
         skipped = 0
         errors: list[dict] = []
         files_by_index = landmark_image_files_by_index or {}
+        # ── within-batch dedup: track GPS coords already processed in this batch ──
+        seen_coords: set[tuple[float, float]] = set()
 
         for idx, h_data in enumerate(payload.households):
+            coord_key = (round(h_data.latitude, 6), round(h_data.longitude, 6))
+            if coord_key in seen_coords:
+                skipped += 1
+                logger.info("Bulk upload: skipping index %d (duplicate within batch)", idx)
+                continue
+
             try:
                 await self.create_household(
                     h_data,
@@ -340,10 +418,12 @@ class HouseholdService:
                     landmark_image_files=files_by_index.get(idx, []),
                 )
                 created += 1
+                seen_coords.add(coord_key)
 
             except HTTPException as exc:
                 if exc.status_code == status.HTTP_409_CONFLICT:
                     skipped += 1
+                    seen_coords.add(coord_key)
                 else:
                     errors.append({"index": idx, "detail": str(exc.detail)})
             except Exception as exc:

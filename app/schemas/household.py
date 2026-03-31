@@ -1,5 +1,6 @@
 from datetime import datetime
 from uuid import UUID
+from typing import Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -81,6 +82,32 @@ class HouseholdBrief(OrmBase):
     distance_metres: float | None = None
     landmark_image_count: int = 0
     landmark_image_url: str | None = None
+
+
+class PersonUpdate(BaseModel):
+    """Used inside HouseholdUpdate to replace the persons list."""
+    name: Optional[str] = Field(None, max_length=120)
+    age: Optional[int] = Field(None, ge=0, le=120)
+    gender: Optional[GenderType] = None
+    is_voter: bool = False
+
+
+class HouseholdUpdate(BaseModel):
+    """Partial update schema — all fields optional."""
+    model_config = ConfigDict(extra="forbid")
+
+    address_text: Optional[str] = None
+    house_type: Optional[HouseType] = None
+    unit_id: Optional[UUID] = None
+    persons: Optional[list[PersonUpdate]] = None
+
+    @model_validator(mode="after")
+    def apartment_must_have_unit(self) -> "HouseholdUpdate":
+        if self.house_type == HouseType.APARTMENT and self.unit_id is None:
+            raise ValueError("unit_id is required for APARTMENT type households")
+        if self.house_type == HouseType.INDIVIDUAL and self.unit_id is not None:
+            raise ValueError("unit_id must be null for INDIVIDUAL type households")
+        return self
 
 
 class BulkHouseholdCreate(BaseModel):
