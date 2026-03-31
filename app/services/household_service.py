@@ -228,17 +228,6 @@ class HouseholdService:
         upload_handled = False
 
         try:
-            dupes = await self.find_nearby_duplicates(payload.latitude, payload.longitude)
-            if dupes:
-                ids = [str(d.id) for d in dupes]
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "message": "Possible duplicate household(s) found within 20 metres.",
-                        "duplicate_ids": ids,
-                    },
-                )
-
             total_images = len(payload.landmark_image_urls) + len(uploaded_files)
             if total_images > settings.HOUSEHOLD_IMAGE_LIMIT:
                 raise HTTPException(
@@ -401,16 +390,8 @@ class HouseholdService:
         skipped = 0
         errors: list[dict] = []
         files_by_index = landmark_image_files_by_index or {}
-        # ── within-batch dedup: track GPS coords already processed in this batch ──
-        seen_coords: set[tuple[float, float]] = set()
 
         for idx, h_data in enumerate(payload.households):
-            coord_key = (round(h_data.latitude, 6), round(h_data.longitude, 6))
-            if coord_key in seen_coords:
-                skipped += 1
-                logger.info("Bulk upload: skipping index %d (duplicate within batch)", idx)
-                continue
-
             try:
                 await self.create_household(
                     h_data,
@@ -418,14 +399,9 @@ class HouseholdService:
                     landmark_image_files=files_by_index.get(idx, []),
                 )
                 created += 1
-                seen_coords.add(coord_key)
 
             except HTTPException as exc:
-                if exc.status_code == status.HTTP_409_CONFLICT:
-                    skipped += 1
-                    seen_coords.add(coord_key)
-                else:
-                    errors.append({"index": idx, "detail": str(exc.detail)})
+                errors.append({"index": idx, "detail": str(exc.detail)})
             except Exception as exc:
                 logger.exception("Bulk upload error at index %d", idx)
                 errors.append({"index": idx, "detail": str(exc)})
@@ -436,6 +412,3 @@ class HouseholdService:
             duplicates_skipped=skipped,
             errors=errors,
         )
-
-
-
