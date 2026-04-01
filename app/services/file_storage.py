@@ -23,6 +23,21 @@ class FileStorageService:
     def __init__(self) -> None:
         self._root = Path(settings.UPLOAD_DIR).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize S3 client if enabled
+        self._s3_client = None
+        if settings.USE_S3_ENABLED:
+            try:
+                import boto3
+                self._s3_client = boto3.client(
+                    "s3",
+                    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                    region_name=settings.AWS_S3_REGION,
+                )
+            except Exception:
+                # If S3 initialization fails, fall back to local storage
+                self._s3_client = None
 
     async def save_household_images(
         self,
@@ -38,33 +53,61 @@ class FileStorageService:
                 ),
             )
 
-        target_dir = self._root / "households" / str(household_id)
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        saved_paths: list[Path] = []
         saved_urls: list[str] = []
 
         try:
             for upload in files:
                 extension = self._resolve_extension(upload)
                 filename = f"{uuid4()}{extension}"
-                destination = target_dir / filename
-
-                async with aiofiles.open(destination, "wb") as buffer:
-                    while chunk := await upload.read(1024 * 1024):
-                        await buffer.write(chunk)
-
-                saved_paths.append(destination)
-                saved_urls.append(
-                    f"{settings.UPLOAD_URL_PREFIX}/households/{household_id}/{filename}"
-                )
+                
+                if self._s3_client and settings.USE_S3_ENABLED:
+                    # Upload to S3
+                    url = await self._save_to_s3(household_id, filename, upload)
+                else:
+                    # Upload to local storage
+                    url = await self._save_to_local(household_id, filename, upload)
+                
+                saved_urls.append(url)
 
             return saved_urls
         except Exception:
-            self.delete_files(saved_paths)
+            await self.close_files(files)
             raise
         finally:
             await self.close_files(files)
+
+    async def _save_to_s3(self, household_id: UUID, filename: str, upload: UploadFile) -> str:
+        """Upload file to S3 and return the URL"""
+        try:
+            file_content = await upload.read()
+            s3_key = f"households/{household_id}/{filename}"
+            
+            self._s3_client.put_object(
+                Bucket=settings.AWS_S3_BUCKET,
+                Key=s3_key,
+                Body=file_content,
+                ContentType=upload.content_type or "image/jpeg",
+            )
+            
+            # Generate S3 URL
+            url = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}"
+            return url
+        except Exception:
+            # Fall back to local storage if S3 fails
+            return await self._save_to_local(household_id, filename, upload)
+
+    async def _save_to_local(self, household_id: UUID, filename: str, upload: UploadFile) -> str:
+        """Upload file to local storage and return the URL"""
+        target_dir = self._root / "households" / str(household_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        destination = target_dir / filename
+        
+        async with aiofiles.open(destination, "wb") as buffer:
+            while chunk := await upload.read(1024 * 1024):
+                await buffer.write(chunk)
+        
+        return f"{settings.UPLOAD_URL_PREFIX}/households/{household_id}/{filename}"
 
     async def close_files(self, files: list[UploadFile]) -> None:
         for upload in files:
@@ -73,19 +116,43 @@ class FileStorageService:
 
     def delete_urls(self, urls: list[str]) -> None:
         for url in urls:
-            relative_path = url.removeprefix(settings.UPLOAD_URL_PREFIX).lstrip("/")
-            if not relative_path:
-                continue
-            path = self._root / relative_path
-            with contextlib.suppress(FileNotFoundError):
-                path.unlink()
-            self._cleanup_empty_parents(path.parent)
+            if url.startswith(f"https://{settings.AWS_S3_BUCKET}.s3."):
+                # S3 URL - extract key and delete from S3
+                self._delete_s3_files([url])
+            else:
+                # Local URL
+                relative_path = url.removeprefix(settings.UPLOAD_URL_PREFIX).lstrip("/")
+                if not relative_path:
+                    continue
+                path = self._root / relative_path
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+                self._cleanup_empty_parents(path.parent)
 
     def delete_files(self, paths: list[Path]) -> None:
         for path in paths:
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
             self._cleanup_empty_parents(path.parent)
+
+    def _delete_s3_files(self, urls: list[str]) -> None:
+        """Delete files from S3"""
+        if not self._s3_client or not settings.USE_S3_ENABLED:
+            return
+        
+        for url in urls:
+            try:
+                # Extract S3 key from URL
+                prefix = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_S3_REGION}.amazonaws.com/"
+                if url.startswith(prefix):
+                    s3_key = url[len(prefix):]
+                    self._s3_client.delete_object(
+                        Bucket=settings.AWS_S3_BUCKET,
+                        Key=s3_key,
+                    )
+            except Exception:
+                # Suppress S3 deletion errors
+                pass
 
     def _resolve_extension(self, upload: UploadFile) -> str:
         content_type = (upload.content_type or "").lower()

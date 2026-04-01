@@ -26,7 +26,14 @@ class Settings(BaseSettings):
     # Duplicate detection radius (metres)
     DUPLICATE_RADIUS_METRES: int = 20
 
-    # Uploads
+    # Uploads - S3
+    USE_S3_ENABLED: bool = False
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_S3_BUCKET: str = "voter-app-uploads"
+    AWS_S3_REGION: str = "ap-south-1"
+
+    # Uploads - Local (fallback)
     UPLOAD_DIR: str = "uploads"
     UPLOAD_URL_PREFIX: str = "/uploads"
     HOUSEHOLD_IMAGE_LIMIT: int = 5
