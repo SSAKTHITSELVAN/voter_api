@@ -21,6 +21,8 @@ _ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
 class FileStorageService:
     def __init__(self) -> None:
+        import logging
+        self._logger = logging.getLogger(__name__)
         self._root = Path(settings.UPLOAD_DIR).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         
@@ -29,14 +31,24 @@ class FileStorageService:
         if settings.USE_S3_ENABLED:
             try:
                 import boto3
+                self._logger.info("S3 enabled, initializing S3 client...")
+                self._logger.info(f"Bucket: {settings.AWS_S3_BUCKET}, Region: {settings.AWS_S3_REGION}")
+                
+                # Check if credentials are set
+                if not settings.AWS_ACCESS_KEY_ID or settings.AWS_ACCESS_KEY_ID == "":
+                    self._logger.error("AWS_ACCESS_KEY_ID is empty!")
+                if not settings.AWS_SECRET_ACCESS_KEY or settings.AWS_SECRET_ACCESS_KEY == "":
+                    self._logger.error("AWS_SECRET_ACCESS_KEY is empty!")
+                
                 self._s3_client = boto3.client(
                     "s3",
                     aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                     aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                     region_name=settings.AWS_S3_REGION,
                 )
-            except Exception:
-                # If S3 initialization fails, fall back to local storage
+                self._logger.info("✓ S3 client initialized successfully")
+            except Exception as e:
+                self._logger.error(f"✗ Failed to initialize S3 client: {str(e)}")
                 self._s3_client = None
 
     async def save_household_images(
@@ -79,6 +91,7 @@ class FileStorageService:
     async def _save_to_s3(self, household_id: UUID, filename: str, upload: UploadFile) -> str:
         """Upload file to S3 and return the URL"""
         try:
+            self._logger.info(f"Attempting to upload to S3: {filename}")
             file_content = await upload.read()
             s3_key = f"households/{household_id}/{filename}"
             
@@ -91,8 +104,10 @@ class FileStorageService:
             
             # Generate S3 URL
             url = f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_S3_REGION}.amazonaws.com/{s3_key}"
+            self._logger.info(f"✓ Successfully uploaded to S3: {url}")
             return url
-        except Exception:
+        except Exception as e:
+            self._logger.error(f"✗ S3 upload failed: {str(e)}, falling back to local storage")
             # Fall back to local storage if S3 fails
             return await self._save_to_local(household_id, filename, upload)
 
